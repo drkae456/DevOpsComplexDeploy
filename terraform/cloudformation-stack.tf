@@ -111,7 +111,7 @@ output "dynamodb_table_name" {
 output "deployment_status" {
   description = "Deployment status summary"
   value = {
-    stack_status  = aws_cloudformation_stack.serverless_app.status
+    stack_status  = aws_cloudformation_stack.serverless_app.stack_status
     stack_id      = aws_cloudformation_stack.serverless_app.id
     ecr_repository = aws_ecr_repository.app.repository_url
     vpc_created   = !var.use_existing_vpc

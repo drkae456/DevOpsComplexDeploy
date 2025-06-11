@@ -47,8 +47,13 @@ jobs:
 
       - name: Create ECR Repository
         run: |
-          aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} || \
-          aws ecr create-repository --repository-name ${{ env.ECR_REPOSITORY }}
+          if aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} >/dev/null 2>&1; then
+            echo "✅ ECR repository '${{ env.ECR_REPOSITORY }}' already exists. Skipping creation."
+          else
+            echo "🔎 ECR repository '${{ env.ECR_REPOSITORY }}' not found. Creating..."
+            aws ecr create-repository --repository-name ${{ env.ECR_REPOSITORY }}
+            echo "✅ ECR repository '${{ env.ECR_REPOSITORY }}' created."
+          fi
 
       - name: Login to Amazon ECR
         id: login-ecr
