@@ -309,7 +309,7 @@ resource "aws_lb_target_group_attachment" "lambda" {
 # --- WAF ---
 resource "aws_wafv2_web_acl" "main" {
   name  = "${var.app_name}-waf"
-  scope = "CLOUDFRONT"
+  scope = "REGIONAL"
 
   default_action {
     allow {}
@@ -485,6 +485,11 @@ resource "aws_dynamodb_table" "main" {
   server_side_encryption {
     enabled     = true
     kms_key_arn = aws_kms_key.main.arn
+  }
+
+  lifecycle {
+    prevent_destroy = false
+    ignore_changes  = [read_capacity, write_capacity]
   }
 
   tags = {
