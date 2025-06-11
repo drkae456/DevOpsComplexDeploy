@@ -15,3 +15,41 @@ variable "ecr_image_uri" {
   type        = string
   # You will pass this in from GitHub Actions after the build step
 }
+
+# Variables for checking existing resources
+variable "use_existing_vpc" {
+  description = "Whether to use an existing VPC instead of creating a new one."
+  type        = bool
+  default     = false
+}
+
+variable "use_existing_s3_bucket" {
+  description = "Whether to use an existing S3 bucket instead of creating a new one."
+  type        = bool
+  default     = false
+}
+
+variable "existing_bucket_suffix" {
+  description = "The suffix of the existing S3 bucket (if using existing bucket)."
+  type        = string
+  default     = ""
+}
+
+variable "use_existing_dynamodb" {
+  description = "Whether to use an existing DynamoDB table instead of creating a new one."
+  type        = bool
+  default     = false
+}
+
+variable "use_existing_lambda" {
+  description = "Whether to use an existing Lambda function instead of creating a new one."
+  type        = bool
+  default     = false
+}
+
+variable "use_existing_alb" {
+  description = "Whether to use an existing ALB instead of creating a new one."
+  type        = bool
+  default     = false
+}
+
