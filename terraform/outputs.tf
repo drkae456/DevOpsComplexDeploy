@@ -48,11 +48,6 @@ output "s3_bucket_name" {
   value       = local.s3_bucket_id
 }
 
-output "dynamodb_table_name" {
-  description = "Name of the DynamoDB table"
-  value       = local.dynamodb_table_name
-}
-
 output "application_url" {
   description = "Application URL via CloudFront"
   value       = "http://${aws_cloudfront_distribution.main.domain_name}"
@@ -61,15 +56,4 @@ output "application_url" {
 output "direct_alb_url" {
   description = "Direct ALB URL (for testing)"
   value       = "http://${local.alb_dns_name}"
-}
-
-output "deployment_status" {
-  description = "Status of resource deployment (new vs existing)"
-  value = {
-    vpc_created       = !var.use_existing_vpc
-    s3_created        = !var.use_existing_s3_bucket  
-    dynamodb_created  = !var.use_existing_dynamodb
-    lambda_created    = !var.use_existing_lambda
-    alb_created       = !var.use_existing_alb
-  }
 } 
