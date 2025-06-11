@@ -85,7 +85,11 @@ jobs:
       - name: Terraform Init
         run: terraform init
 
-      # The manual approval happens here because of the 'environment' configuration
+      - name: Terraform Destroy
+        run: terraform destroy -auto-approve
+
+      - name: Terraform Init
+        run: terraform init
 
       - name: Import Existing Resources
         continue-on-error: true
