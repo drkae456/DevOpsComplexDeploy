@@ -54,10 +54,6 @@ module "vpc" {
   enable_dns_hostnames = true
   enable_dns_support   = true
 
-  # Enable VPC endpoints
-  enable_s3_endpoint       = true
-  enable_dynamodb_endpoint = true
-
   tags = {
     Name = "${var.app_name}-vpc"
   }
@@ -65,10 +61,11 @@ module "vpc" {
 
 # Local values to use existing or new VPC
 locals {
-  vpc_id          = var.use_existing_vpc ? data.aws_vpc.existing[0].id : module.vpc[0].vpc_id
-  private_subnets = var.use_existing_vpc ? data.aws_subnets.existing_private[0].ids : module.vpc[0].private_subnets
-  public_subnets  = var.use_existing_vpc ? data.aws_subnets.existing_public[0].ids : module.vpc[0].public_subnets
-  vpc_cidr_block  = var.use_existing_vpc ? data.aws_vpc.existing[0].cidr_block : module.vpc[0].vpc_cidr_block
+  vpc_id                   = var.use_existing_vpc ? data.aws_vpc.existing[0].id : module.vpc[0].vpc_id
+  private_subnets          = var.use_existing_vpc ? data.aws_subnets.existing_private[0].ids : module.vpc[0].private_subnets
+  public_subnets           = var.use_existing_vpc ? data.aws_subnets.existing_public[0].ids : module.vpc[0].public_subnets
+  vpc_cidr_block           = var.use_existing_vpc ? data.aws_vpc.existing[0].cidr_block : module.vpc[0].vpc_cidr_block
+  private_route_table_ids  = var.use_existing_vpc ? data.aws_route_tables.existing_private[0].ids : module.vpc[0].private_route_table_ids
 }
 
 # Get existing subnets if using existing VPC
@@ -91,6 +88,17 @@ data "aws_subnets" "existing_public" {
   }
   tags = {
     Type = "Public"
+  }
+}
+
+data "aws_route_tables" "existing_private" {
+  count = var.use_existing_vpc ? 1 : 0
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.existing[0].id]
+  }
+  tags = {
+    Type = "Private"
   }
 }
 
@@ -134,6 +142,30 @@ resource "aws_vpc_endpoint" "ecr_dkr" {
 
   tags = {
     Name = "${var.app_name}-ecr-dkr-endpoint"
+  }
+}
+
+resource "aws_vpc_endpoint" "s3" {
+  count             = var.use_existing_vpc ? 0 : 1
+  vpc_id            = local.vpc_id
+  service_name      = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = local.private_route_table_ids
+
+  tags = {
+    Name = "${var.app_name}-s3-endpoint"
+  }
+}
+
+resource "aws_vpc_endpoint" "dynamodb" {
+  count             = var.use_existing_vpc ? 0 : 1
+  vpc_id            = local.vpc_id
+  service_name      = "com.amazonaws.${var.aws_region}.dynamodb"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = local.private_route_table_ids
+
+  tags = {
+    Name = "${var.app_name}-dynamodb-endpoint"
   }
 }
 
