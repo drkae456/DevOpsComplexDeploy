@@ -1,3 +1,46 @@
+# Generate random suffix for bucket names
+resource "random_id" "bucket_suffix" {
+  byte_length = 8
+}
+
+# --- NETWORKING ---
+# VPC Module
+module "vpc" {
+  source = "terraform-aws-modules/vpc/aws"
+  version = "~> 5.0"
+
+  name = "${var.app_name}-vpc"
+  cidr = "10.0.0.0/16"
+
+  azs             = ["${var.aws_region}a", "${var.aws_region}b"]
+  private_subnets = ["10.0.1.0/24", "10.0.2.0/24"]
+  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24"]
+
+  enable_nat_gateway = true
+  enable_vpn_gateway = false
+
+  tags = {
+    Name = "${var.app_name}-vpc"
+  }
+}
+
+# Security Group for Lambda
+resource "aws_security_group" "lambda" {
+  name_prefix = "${var.app_name}-lambda-"
+  vpc_id      = module.vpc.vpc_id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.app_name}-lambda-sg"
+  }
+}
+
 # --- SECURITY & COMPLIANCE ---
 resource "aws_kms_key" "main" {
   description             = "KMS CMK for encrypting app data"
@@ -34,14 +77,24 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "static_assets" {
   }
 }
 
-resource "aws_dynamodb_global_table" "main" {
-  name = "${var.app_name}-table"
-  replica {
-    region_name = var.aws_region
+resource "aws_dynamodb_table" "main" {
+  name           = "${var.app_name}-table"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "id"
+
+  attribute {
+    name = "id"
+    type = "S"
   }
-  # Note: The schema (attributes, keys) is defined on the underlying
-  # aws_dynamodb_table resource, which is implicitly created.
-  # For simplicity, this is omitted. A real table needs attribute definitions.
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.main.arn
+  }
+
+  tags = {
+    Name = "${var.app_name}-table"
+  }
 }
 
 # --- APPLICATION TIER (in Private Subnet) ---
@@ -59,7 +112,56 @@ resource "aws_iam_role" "fastapi_lambda" {
       }
     }]
   })
-  # Attach policies for S3, DynamoDB, EventBridge, CloudWatch Logs
+}
+
+# IAM Policy for Lambda to access VPC, CloudWatch, DynamoDB, and S3
+resource "aws_iam_role_policy" "fastapi_lambda_policy" {
+  name = "${var.app_name}-fastapi-lambda-policy"
+  role = aws_iam_role.fastapi_lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:CreateNetworkInterface",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DeleteNetworkInterface"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem"
+        ]
+        Resource = aws_dynamodb_table.main.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject"
+        ]
+        Resource = "${aws_s3_bucket.static_assets.arn}/*"
+      }
+    ]
+  })
 }
 
 # ECR Repository
@@ -88,7 +190,7 @@ resource "aws_lambda_function" "fastapi" {
 
   environment {
     variables = {
-      DYNAMODB_TABLE = aws_dynamodb_global_table.main.name
+      DYNAMODB_TABLE = aws_dynamodb_table.main.name
     }
   }
 }
