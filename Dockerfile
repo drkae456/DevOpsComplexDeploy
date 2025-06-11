@@ -2,14 +2,10 @@
 FROM public.ecr.aws/lambda/python:3.9
 
 # Copy the requirements file
-COPY pyproject.toml poetry.lock* ./
-# Or: COPY requirements.txt ./
+COPY requirements.txt ./
 
-# Install dependencies using Poetry
-# Ensure you have a poetry.lock file by running `poetry lock`
-RUN pip install poetry && poetry config virtualenvs.create false && poetry install --no-root --no-dev
-# Or, install using pip:
-# RUN pip install -r requirements.txt
+# Install dependencies using pip
+RUN pip install -r requirements.txt
 
 # Copy the application source code
 COPY ./src/ ${LAMBDA_TASK_ROOT}
