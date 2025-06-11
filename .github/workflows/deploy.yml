@@ -1,0 +1,92 @@
+name: Deploy FastAPI App to AWS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# The ARN of the role created in the previous step
+env:
+  AWS_REGION: "ap-southeast-4"
+  ECR_REPOSITORY: "serverless-fastapi-app"
+  AWS_ROLE_TO_ASSUME: "arn:aws:iam::123456789012:role/github-actions-deploy-role"
+
+permissions:
+  id-token: write   # Required for OIDC
+  contents: read    # Required to check out the code
+
+jobs:
+  build-and-push-image:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.build-image.outputs.image_uri }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          # Set the output for the next job
+          echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  deploy:
+    name: "Terraform Plan & Apply"
+    needs: build-and-push-image
+    runs-on: ubuntu-latest
+    
+    # This environment is protected by a manual approval rule
+    environment:
+      name: production
+      url: https://my-app-url.com # Optional: set after deployment
+
+    defaults:
+      run:
+        working-directory: ./terraform
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false # We run commands directly
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -out=tfplan \
+            -var="ecr_image_uri=${{ needs.build-and-push-image.outputs.image_uri }}"
+        
+      # The manual approval happens here because of the 'environment' configuration
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
