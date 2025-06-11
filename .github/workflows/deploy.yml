@@ -10,11 +10,11 @@ on:
 env:
   AWS_REGION: "ap-southeast-4"
   ECR_REPOSITORY: "serverless-fastapi-app"
-  AWS_ROLE_TO_ASSUME: "arn:aws:iam::123456789012:role/github-actions-deploy-role"
+  AWS_ROLE_TO_ASSUME: "${{ secrets.AWS_ROLE_TO_ASSUME }}"
 
 permissions:
-  id-token: write   # Required for OIDC
-  contents: read    # Required to check out the code
+  id-token: write # Required for OIDC
+  contents: read # Required to check out the code
 
 jobs:
   build-and-push-image:
@@ -32,6 +32,11 @@ jobs:
         with:
           role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create ECR Repository
+        run: |
+          aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} || \
+          aws ecr create-repository --repository-name ${{ env.ECR_REPOSITORY }}
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -52,11 +57,11 @@ jobs:
     name: "Terraform Plan & Apply"
     needs: build-and-push-image
     runs-on: ubuntu-latest
-    
+
     # This environment is protected by a manual approval rule
     environment:
       name: production
-      url: https://my-app-url.com # Optional: set after deployment
+      # url: https://my-app-url.com # Optional: set after deployment
 
     defaults:
       run:
@@ -85,7 +90,7 @@ jobs:
         run: |
           terraform plan -out=tfplan \
             -var="ecr_image_uri=${{ needs.build-and-push-image.outputs.image_uri }}"
-        
+
       # The manual approval happens here because of the 'environment' configuration
 
       - name: Terraform Apply
