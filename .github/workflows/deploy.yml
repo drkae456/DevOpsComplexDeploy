@@ -94,10 +94,13 @@ jobs:
       # The manual approval happens here because of the 'environment' configuration
 
       - name: Import Existing Resources
+        continue-on-error: true
         run: |
           # Make import script executable and run it
           chmod +x import.sh
-          ./import.sh || echo "Import script completed with warnings - continuing with apply"
+          echo "Running import script to handle existing resources..."
+          ./import.sh
+          echo "Import step completed - proceeding with terraform apply"
 
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan

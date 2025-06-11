@@ -1,40 +1,70 @@
 #!/bin/bash
 
-echo "Starting resource import process..."
+set -e  # Exit on any error unless explicitly handled
 
-# Import DynamoDB table (note: uses count, so import to [0])
-echo "Importing DynamoDB table..."
-terraform import 'aws_dynamodb_table.main[0]' serverless-fastapi-app-table
+echo "Starting robust resource import process..."
+
+# Function to check if a resource is already in state
+check_resource_in_state() {
+    local resource_address="$1"
+    terraform state show "$resource_address" >/dev/null 2>&1
+}
+
+# Function to safely import a resource
+safe_import() {
+    local resource_address="$1"
+    local resource_id="$2"
+    local resource_name="$3"
+    
+    echo "Checking $resource_name..."
+    
+    if check_resource_in_state "$resource_address"; then
+        echo "✓ $resource_name already in state, skipping import"
+        return 0
+    fi
+    
+    echo "Importing $resource_name..."
+    if terraform import "$resource_address" "$resource_id" 2>/dev/null; then
+        echo "✓ Successfully imported $resource_name"
+    else
+        echo "⚠ Failed to import $resource_name (resource may not exist yet)"
+    fi
+}
+
+# Function to find VPC ID
+find_vpc_id() {
+    aws ec2 describe-vpcs \
+        --filters 'Name=tag:Name,Values=serverless-fastapi-app-vpc' \
+        --query 'Vpcs[0].VpcId' \
+        --output text 2>/dev/null || echo "None"
+}
+
+# Import DynamoDB table
+safe_import 'aws_dynamodb_table.main[0]' 'serverless-fastapi-app-table' 'DynamoDB table'
 
 # Import IAM role
-echo "Importing IAM role..."
-terraform import aws_iam_role.fastapi_lambda serverless-fastapi-app-fastapi-lambda-role
+safe_import 'aws_iam_role.fastapi_lambda' 'serverless-fastapi-app-fastapi-lambda-role' 'IAM role'
 
 # Import ECR repository
-echo "Importing ECR repository..."
-terraform import aws_ecr_repository.app serverless-fastapi-app
+safe_import 'aws_ecr_repository.app' 'serverless-fastapi-app' 'ECR repository'
 
 # Import Load Balancer Target Group
-echo "Importing ALB target group..."
-terraform import aws_lb_target_group.lambda serverless-fastapi-app-lambda-tg
+safe_import 'aws_lb_target_group.lambda' 'serverless-fastapi-app-lambda-tg' 'ALB target group'
 
 # Import WAF Web ACL
-echo "Importing WAF Web ACL..."
-terraform import aws_wafv2_web_acl.main serverless-fastapi-app-waf
+safe_import 'aws_wafv2_web_acl.main' 'serverless-fastapi-app-waf' 'WAF Web ACL'
 
-# Import VPC - automatically find the VPC ID
-echo "Finding and importing VPC..."
-VPC_ID=$(aws ec2 describe-vpcs --filters 'Name=tag:Name,Values=serverless-fastapi-app-vpc' --query 'Vpcs[0].VpcId' --output text)
+# Import VPC - find the VPC ID automatically
+echo "Checking for existing VPC..."
+VPC_ID=$(find_vpc_id)
 
-if [ "$VPC_ID" != "None" ] && [ "$VPC_ID" != "" ]; then
-    echo "Found VPC ID: $VPC_ID"
-    terraform import "module.vpc[0].aws_vpc.this[0]" $VPC_ID
-    echo "VPC imported successfully!"
+if [ "$VPC_ID" != "None" ] && [ -n "$VPC_ID" ]; then
+    safe_import "module.vpc[0].aws_vpc.this[0]" "$VPC_ID" "VPC"
 else
-    echo "WARNING: Could not find VPC with name 'serverless-fastapi-app-vpc'"
-    echo "You may need to manually import the VPC or check if one exists"
+    echo "⚠ No existing VPC found with name 'serverless-fastapi-app-vpc'"
 fi
 
 echo ""
-echo "Import process completed!"
+echo "✓ Import process completed!"
+echo "Note: Some resources may not exist yet and will be created during apply."
 echo "Now run: terraform apply -auto-approve" 
