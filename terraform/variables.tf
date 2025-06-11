@@ -13,7 +13,6 @@ variable "app_name" {
 variable "ecr_image_uri" {
   description = "The full URI of the Docker image in ECR."
   type        = string
-  default = "014901325917.dkr.ecr.ap-southeast-4.amazonaws.com/serverless-fastapi-app"
   # You will pass this in from GitHub Actions after the build step
 }
 
