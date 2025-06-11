@@ -88,7 +88,7 @@ jobs:
       - name: Terraform Plan
         id: plan
         run: |
-          terraform plan -out=tfplan \
+          terraform plan \
             -var="ecr_image_uri=${{ needs.build-and-push-image.outputs.image_uri }}"
 
       # The manual approval happens here because of the 'environment' configuration
@@ -103,4 +103,6 @@ jobs:
           echo "Import step completed - proceeding with terraform apply"
 
       - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
+        run: |
+          terraform apply -auto-approve \
+            -var="ecr_image_uri=${{ needs.build-and-push-image.outputs.image_uri }}"
