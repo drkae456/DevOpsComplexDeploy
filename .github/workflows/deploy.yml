@@ -85,12 +85,6 @@ jobs:
       - name: Terraform Init
         run: terraform init
 
-      - name: Terraform Plan
-        id: plan
-        run: |
-          terraform plan \
-            -var="ecr_image_uri=${{ needs.build-and-push-image.outputs.image_uri }}"
-
       # The manual approval happens here because of the 'environment' configuration
 
       - name: Import Existing Resources
