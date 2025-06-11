@@ -1,0 +1,251 @@
+name: Deploy with CloudFormation Stack Management
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      force_recreate:
+        description: "Force recreate the stack (delete and redeploy)"
+        required: false
+        default: "false"
+        type: boolean
+      retry_count:
+        description: "Number of retry attempts"
+        required: false
+        default: "3"
+        type: string
+
+env:
+  AWS_REGION: "ap-southeast-4"
+  ECR_REPOSITORY: "serverless-fastapi-app"
+  AWS_ROLE_TO_ASSUME: "${{ secrets.AWS_ROLE_TO_ASSUME }}"
+  STACK_NAME: "serverless-fastapi-app-stack"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-push-image:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.build-image.outputs.image_uri }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create ECR Repository
+        run: |
+          aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} || \
+          aws ecr create-repository --repository-name ${{ env.ECR_REPOSITORY }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  deploy-with-retry:
+    name: "Deploy CloudFormation Stack with Retry Logic"
+    needs: build-and-push-image
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+
+    defaults:
+      run:
+        working-directory: ./terraform
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check Stack Status and Force Recreate
+        if: ${{ github.event.inputs.force_recreate == 'true' }}
+        run: |
+          echo "🔄 Force recreate requested - cleaning up existing stack..."
+
+          # Check if stack exists
+          if aws cloudformation describe-stacks --stack-name ${{ env.STACK_NAME }} >/dev/null 2>&1; then
+            echo "Stack exists, deleting..."
+            aws cloudformation delete-stack --stack-name ${{ env.STACK_NAME }}
+            
+            echo "Waiting for stack deletion to complete..."
+            aws cloudformation wait stack-delete-complete --stack-name ${{ env.STACK_NAME }}
+            echo "✅ Stack deleted successfully"
+          else
+            echo "Stack doesn't exist, proceeding..."
+          fi
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Deploy with Retry Logic
+        env:
+          RETRY_COUNT: ${{ github.event.inputs.retry_count || '3' }}
+          ECR_IMAGE_URI: ${{ needs.build-and-push-image.outputs.image_uri }}
+        run: |
+          #!/bin/bash
+          set -e
+
+          RETRY_COUNT=${RETRY_COUNT:-3}
+          ATTEMPT=1
+
+          echo "🚀 Starting deployment with retry logic (max attempts: $RETRY_COUNT)"
+
+          deploy_stack() {
+            echo ""
+            echo "🔄 Deployment attempt $ATTEMPT of $RETRY_COUNT"
+            echo "ECR Image URI: $ECR_IMAGE_URI"
+            
+            # Run terraform plan first
+            echo "📋 Running terraform plan..."
+            terraform plan \
+              -var="ecr_image_uri=$ECR_IMAGE_URI" \
+              -var="use_existing_vpc=true" \
+              -out=tfplan
+            
+            # Apply the plan
+            echo "🏗️  Running terraform apply..."
+            if terraform apply -auto-approve tfplan; then
+              echo "✅ Deployment successful on attempt $ATTEMPT"
+              
+              # Get outputs
+              echo ""
+              echo "📊 Deployment outputs:"
+              terraform output -json
+              
+              return 0
+            else
+              echo "❌ Deployment failed on attempt $ATTEMPT"
+              return 1
+            fi
+          }
+
+          cleanup_failed_deployment() {
+            echo "🧹 Cleaning up failed deployment..."
+            
+            # Check CloudFormation stack status
+            STACK_STATUS=$(aws cloudformation describe-stacks \
+              --stack-name ${{ env.STACK_NAME }} \
+              --query 'Stacks[0].StackStatus' \
+              --output text 2>/dev/null || echo "DOES_NOT_EXIST")
+            
+            echo "Stack status: $STACK_STATUS"
+            
+            if [[ "$STACK_STATUS" == *"FAILED"* ]] || [[ "$STACK_STATUS" == *"ROLLBACK"* ]]; then
+              echo "Stack is in failed state, deleting..."
+              
+              aws cloudformation delete-stack --stack-name ${{ env.STACK_NAME }}
+              echo "Waiting for stack deletion..."
+              aws cloudformation wait stack-delete-complete --stack-name ${{ env.STACK_NAME }}
+              echo "✅ Failed stack cleaned up"
+            fi
+            
+            # Clean up terraform state if needed
+            echo "Refreshing terraform state..."
+            terraform refresh \
+              -var="ecr_image_uri=$ECR_IMAGE_URI" \
+              -var="use_existing_vpc=true" || true
+          }
+
+          # Main retry loop
+          while [ $ATTEMPT -le $RETRY_COUNT ]; do
+            if deploy_stack; then
+              echo "🎉 Deployment completed successfully!"
+              exit 0
+            fi
+            
+            if [ $ATTEMPT -lt $RETRY_COUNT ]; then
+              echo "💤 Waiting before retry..."
+              cleanup_failed_deployment
+              sleep 30
+              ATTEMPT=$((ATTEMPT + 1))
+            else
+              echo "💥 All deployment attempts failed!"
+              cleanup_failed_deployment
+              exit 1
+            fi
+          done
+
+      - name: Post-Deployment Validation
+        if: success()
+        run: |
+          echo "🔍 Validating deployment..."
+
+          # Get CloudFormation stack outputs
+          aws cloudformation describe-stacks \
+            --stack-name ${{ env.STACK_NAME }} \
+            --query 'Stacks[0].Outputs' \
+            --output table
+
+          # Test endpoints if available
+          LOAD_BALANCER_URL=$(terraform output -raw load_balancer_url 2>/dev/null || echo "")
+          if [ -n "$LOAD_BALANCER_URL" ]; then
+            echo "Testing load balancer endpoint..."
+            curl -f "$LOAD_BALANCER_URL" || echo "Endpoint not yet ready"
+          fi
+
+          echo "✅ Deployment validation completed"
+
+      - name: Cleanup on Failure
+        if: failure()
+        run: |
+          echo "🚨 Deployment failed - running cleanup..."
+
+          # Optional: Delete failed stack (uncomment if desired)
+          # aws cloudformation delete-stack --stack-name ${{ env.STACK_NAME }} || true
+
+          echo "Check AWS Console for detailed CloudFormation events:"
+          echo "https://console.aws.amazon.com/cloudformation/home?region=${{ env.AWS_REGION }}#/stacks"
+
+  notify-deployment:
+    name: "Notify Deployment Status"
+    needs: [build-and-push-image, deploy-with-retry]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Notify Success
+        if: ${{ needs.deploy-with-retry.result == 'success' }}
+        run: |
+          echo "🎉 Deployment successful!"
+          echo "- ECR Image: ${{ needs.build-and-push-image.outputs.image_uri }}"
+          echo "- Stack: ${{ env.STACK_NAME }}"
+          echo "- Region: ${{ env.AWS_REGION }}"
+
+      - name: Notify Failure
+        if: ${{ needs.deploy-with-retry.result == 'failure' }}
+        run: |
+          echo "💥 Deployment failed!"
+          echo "Check the CloudFormation console for details:"
+          echo "https://console.aws.amazon.com/cloudformation/home?region=${{ env.AWS_REGION }}#/stacks"
