@@ -28,11 +28,11 @@ permissions:
   contents: read
 
 jobs:
-  build-and-push-image:
-    name: Build and Push to ECR
+  build-and-deploy:
+    name: Build, Push, and Deploy
     runs-on: ubuntu-latest
-    outputs:
-      image_uri: ${{ steps.build-image.outputs.image_uri }}
+    environment:
+      name: production
 
     steps:
       - name: Checkout repository
@@ -64,35 +64,14 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-  deploy-with-retry:
-    name: "Deploy CloudFormation Stack with Retry Logic"
-    needs: build-and-push-image
-    runs-on: ubuntu-latest
-    environment:
-      name: production
-
-    defaults:
-      run:
-        working-directory: ./terraform
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
           terraform_wrapper: false
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
-
       - name: Check Stack Status and Force Recreate
         if: ${{ github.event.inputs.force_recreate == 'true' }}
+        working-directory: ./terraform
         run: |
           echo "🔄 Force recreate requested - cleaning up existing stack..."
 
@@ -109,12 +88,14 @@ jobs:
           fi
 
       - name: Terraform Init
+        working-directory: ./terraform
         run: terraform init
 
       - name: Deploy with Retry Logic
+        working-directory: ./terraform
         env:
           RETRY_COUNT: ${{ github.event.inputs.retry_count || '3' }}
-          ECR_IMAGE_URI: ${{ needs.build-and-push-image.outputs.image_uri }}
+          ECR_IMAGE_URI: ${{ steps.build-image.outputs.image_uri }}
         run: |
           #!/bin/bash
           set -e
@@ -201,6 +182,7 @@ jobs:
 
       - name: Post-Deployment Validation
         if: success()
+        working-directory: ./terraform
         run: |
           echo "🔍 Validating deployment..."
 
@@ -221,6 +203,7 @@ jobs:
 
       - name: Cleanup on Failure
         if: failure()
+        working-directory: ./terraform
         run: |
           echo "🚨 Deployment failed - running cleanup..."
 
@@ -232,21 +215,20 @@ jobs:
 
   notify-deployment:
     name: "Notify Deployment Status"
-    needs: [build-and-push-image, deploy-with-retry]
+    needs: [build-and-deploy]
     runs-on: ubuntu-latest
     if: always()
 
     steps:
       - name: Notify Success
-        if: ${{ needs.deploy-with-retry.result == 'success' }}
+        if: ${{ needs.build-and-deploy.result == 'success' }}
         run: |
           echo "🎉 Deployment successful!"
-          echo "- ECR Image: ${{ needs.build-and-push-image.outputs.image_uri }}"
           echo "- Stack: ${{ env.STACK_NAME }}"
           echo "- Region: ${{ env.AWS_REGION }}"
 
       - name: Notify Failure
-        if: ${{ needs.deploy-with-retry.result == 'failure' }}
+        if: ${{ needs.build-and-deploy.result == 'failure' }}
         run: |
           echo "💥 Deployment failed!"
           echo "Check the CloudFormation console for details:"
